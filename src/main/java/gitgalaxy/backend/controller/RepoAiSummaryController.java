@@ -2,6 +2,7 @@ package gitgalaxy.backend.controller;
 
 import gitgalaxy.backend.entity.RepoAiSummary;
 import gitgalaxy.backend.repository.RepoAiSummaryRepository;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -9,6 +10,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
 
+@Tag(name = "Repos", description = "레포지토리 조회 / 검색 / AI 분석")
 @RestController
 @RequiredArgsConstructor
 public class RepoAiSummaryController {

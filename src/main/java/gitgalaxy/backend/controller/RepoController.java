@@ -13,6 +13,8 @@ import gitgalaxy.backend.repository.RepoRepository;
 import gitgalaxy.backend.service.RagService;
 import gitgalaxy.backend.service.RepoService;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 
 import org.springframework.http.ResponseEntity;
@@ -24,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+@Tag(name = "Repos", description = "레포지토리 조회 / 검색 / AI 분석")
 @RestController
 @RequestMapping("/repos")
 @RequiredArgsConstructor

@@ -5,6 +5,8 @@ import gitgalaxy.backend.model.FavoriteResponse;
 import gitgalaxy.backend.model.UserResponse;
 import gitgalaxy.backend.repository.AppUserRepository;
 import gitgalaxy.backend.service.FavoriteService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -15,6 +17,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 
+@Tag(name = "Users", description = "유저 조회 / 즐겨찾기")
 @RestController
 @RequestMapping("/users")
 @RequiredArgsConstructor

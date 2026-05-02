@@ -6,6 +6,7 @@ import gitgalaxy.backend.service.EmbeddingPipelineService;
 import gitgalaxy.backend.service.GhArchiveService;
 import gitgalaxy.backend.service.ScoreService;
 import gitgalaxy.backend.service.TrendingRssService;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -22,6 +23,7 @@ import java.util.Map;
  * POST /admin/trending                             → RSS 즉시 실행 + README 임베딩
  * POST /admin/score                                → 전체 repo 스코어 재계산
  */
+@Tag(name = "Admin", description = "운영/개발용 수동 트리거 (프론트 미사용)")
 @RestController
 @RequestMapping("/admin")
 @RequiredArgsConstructor
