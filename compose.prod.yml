@@ -29,6 +29,25 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
     ports:
       - "8080:8080"
+  nginx:
+          image: nginx:alpine
+          container_name: gitgalaxy-nginx
+          ports:
+            - "80:80"
+            - "443:443"
+          volumes:
+            - ./nginx/conf.d:/etc/nginx/conf.d
+            - ./certbot/conf:/etc/letsencrypt
+            - ./certbot/www:/var/www/certbot
+          depends_on:
+            - backend
+
+  certbot:
+            image: certbot/certbot
+            volumes:
+              - ./certbot/conf:/etc/letsencrypt
+              - ./certbot/www:/var/www/certbot
+
 
 volumes:
   postgres-dev-data:
