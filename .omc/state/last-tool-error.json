@@ -1,7 +1,7 @@
 {
   "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"git push origin main\",\"description\":\"Push to origin main\"}",
-  "error": "Exit code 128\nremote: Repository not found.\nfatal: repository 'https://github.com/2026-teecher-team-b/backend.git/' not found",
-  "timestamp": "2026-04-03T15:06:01.230Z",
-  "retry_count": 1
+  "tool_input_preview": "{\"command\":\"rm -f /Users/ukongee/Downloads/backend/.omc/state/hud-state.json && git fetch origin && git merge origin/main --no-edit && git push origin main\",\"description\":\"Remove omc file, merge remot...",
+  "error": "Exit code 2\nerror: Your local changes to the following files would be overwritten by merge:\n\t.omc/state/hud-state.json\n\t.omc/state/last-tool-error.json\nPlease commit your changes or stash them before you merge.\nAborting\nMerge with strategy ort failed.",
+  "timestamp": "2026-05-11T15:22:12.490Z",
+  "retry_count": 2
 }
