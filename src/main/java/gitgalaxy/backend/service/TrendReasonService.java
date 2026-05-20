@@ -1,10 +1,6 @@
 package gitgalaxy.backend.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.cloud.vertexai.VertexAI;
-import com.google.cloud.vertexai.api.GenerateContentResponse;
-import com.google.cloud.vertexai.generativeai.GenerativeModel;
-import gitgalaxy.backend.config.VertexAiProperties;
 import gitgalaxy.backend.entity.RepoHourlyMetrics;
 import gitgalaxy.backend.entity.RepoTrendReason;
 import gitgalaxy.backend.repository.RepoHourlyMetricsRepository;
@@ -31,7 +27,7 @@ public class TrendReasonService {
 
     private final RepoHourlyMetricsRepository metricsRepository;
     private final RepoTrendReasonRepository trendReasonRepository;
-    private final VertexAiProperties vertexAiProperties;
+    private final LlmService llmService;
     private final JdbcTemplate jdbc;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
@@ -40,7 +36,6 @@ public class TrendReasonService {
     public RepoTrendReason getTrendReason(String owner, String repo) {
         String cacheKey = CACHE_KEY_PREFIX + owner + "/" + repo;
 
-        // Redis 캐시 확인
         try {
             String cached = redisTemplate.opsForValue().get(cacheKey);
             if (cached != null) {
@@ -50,12 +45,9 @@ public class TrendReasonService {
             log.debug("Redis 캐시 조회 실패: {}", e.getMessage());
         }
 
-        // DB 확인
         RepoTrendReason dbCached = trendReasonRepository.findByOwnerAndRepo(owner, repo).orElse(null);
-
         RepoTrendReason result = generateTrendReason(owner, repo, dbCached);
 
-        // Redis에 저장
         try {
             redisTemplate.opsForValue().set(cacheKey, objectMapper.writeValueAsString(result));
         } catch (Exception e) {
@@ -69,7 +61,6 @@ public class TrendReasonService {
         String cacheKey = CACHE_KEY_PREFIX + owner + "/" + repo;
         try {
             redisTemplate.delete(cacheKey);
-            log.debug("Redis 캐시 삭제: {}", cacheKey);
         } catch (Exception e) {
             log.debug("Redis 캐시 삭제 실패: {}", e.getMessage());
         }
@@ -172,10 +163,8 @@ public class TrendReasonService {
                 """,
                 owner, repo, trend, watch, commit, pr, issue, changeRate, contextSection);
 
-        try (VertexAI vertexAI = new VertexAI(vertexAiProperties.getProject(), vertexAiProperties.getLocation())) {
-            GenerativeModel model = new GenerativeModel(vertexAiProperties.getModel(), vertexAI);
-            GenerateContentResponse response = model.generateContent(prompt);
-            return response.getCandidates(0).getContent().getParts(0).getText().strip();
+        try {
+            return llmService.chat(prompt).strip();
         } catch (Exception e) {
             log.warn("LLM 트렌드 이유 생성 실패 {}/{}: {}", owner, repo, e.getMessage());
             return trend.equals("상승")

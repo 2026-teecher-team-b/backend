@@ -1,114 +1,99 @@
 package gitgalaxy.backend.service;
 
-import com.google.cloud.vertexai.VertexAI;
-import com.google.cloud.vertexai.api.EndpointName;
-import com.google.cloud.vertexai.api.PredictResponse;
-import com.google.cloud.vertexai.api.PredictionServiceClient;
-import com.google.protobuf.ListValue;
-import com.google.protobuf.Struct;
-import com.google.protobuf.Value;
-import gitgalaxy.backend.config.VertexAiProperties;
+import ai.djl.huggingface.tokenizers.Encoding;
+import ai.djl.huggingface.tokenizers.HuggingFaceTokenizer;
+import ai.djl.inference.Predictor;
+import ai.djl.ndarray.NDArray;
+import ai.djl.ndarray.NDList;
+import ai.djl.ndarray.NDManager;
+import ai.djl.ndarray.types.DataType;
+import ai.djl.ndarray.types.Shape;
+import ai.djl.repository.zoo.Criteria;
+import ai.djl.repository.zoo.ZooModel;
+import ai.djl.translate.NoopTranslator;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.util.List;
+import java.util.Map;
 
 @Service
 @Slf4j
 public class EmbeddingService {
 
-    static final int DIMS = 768;
-    private static final int MAX_RETRIES = 3;
-    private static final long RETRY_DELAY_MS = 1000;
+    static final int DIMS = 1024;
 
-    private final VertexAiProperties props;
-    private VertexAI vertexAI;
-    private PredictionServiceClient client;
-    private String endpointName;
+    private static final String MODEL_NAME = "BAAI/bge-m3";
+    // quantized (~400MB): 첫 실행 시 ~/.djl.ai 캐시에 자동 다운로드
+    private static final String ONNX_URL =
+            "https://huggingface.co/BAAI/bge-m3/resolve/main/onnx/model_quantized.onnx";
 
-    public EmbeddingService(VertexAiProperties props) {
-        this.props = props;
-    }
+    private HuggingFaceTokenizer tokenizer;
+    private ZooModel<NDList, NDList> model;
+    private NDManager manager;
 
     @PostConstruct
-    public void init() {
-        vertexAI = new VertexAI(props.getProject(), props.getLocation());
-        client = vertexAI.getPredictionServiceClient();
-        endpointName = EndpointName.ofProjectLocationPublisherModelName(
-                props.getProject(), props.getLocation(), "google", props.getEmbeddingModel()
-        ).toString();
-        log.info("EmbeddingService 초기화: model={}", props.getEmbeddingModel());
+    public void init() throws Exception {
+        log.info("BGE-M3 로딩 중 (첫 실행 시 모델 다운로드 ~400MB)...");
+
+        tokenizer = HuggingFaceTokenizer.newInstance(MODEL_NAME,
+                Map.of("maxLength", "512", "padding", "true", "truncation", "true"));
+
+        Criteria<NDList, NDList> criteria = Criteria.builder()
+                .setTypes(NDList.class, NDList.class)
+                .optEngine("OnnxRuntime")
+                .optModelUrls(ONNX_URL)
+                .optTranslator(new NoopTranslator())
+                .build();
+
+        model = criteria.loadModel();
+        manager = NDManager.newBaseManager();
+        log.info("BGE-M3 로딩 완료 (dim={})", DIMS);
     }
 
     @PreDestroy
     public void destroy() {
         try {
-            if (client != null) client.close();
-            if (vertexAI != null) vertexAI.close();
+            if (manager != null) manager.close();
+            if (model != null) model.close();
+            if (tokenizer != null) tokenizer.close();
         } catch (Exception e) {
             log.warn("EmbeddingService 종료 오류: {}", e.getMessage());
         }
     }
 
     public boolean isConfigured() {
-        return props.getProject() != null && !props.getProject().isBlank();
+        return model != null && tokenizer != null;
     }
 
     public float[] embed(String text) {
         String input = text.length() > 8000 ? text.substring(0, 8000) : text;
-
-        Exception lastException = null;
-        for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
-            try {
-                return doEmbed(input);
-            } catch (Exception e) {
-                lastException = e;
-                log.warn("임베딩 시도 {}/{} 실패: {}", attempt + 1, MAX_RETRIES, e.getMessage());
-                if (attempt < MAX_RETRIES - 1) {
-                    try { Thread.sleep(RETRY_DELAY_MS * (attempt + 1)); } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        throw new RuntimeException("Embedding 인터럽트", ie);
-                    }
-                    reconnect();
-                }
-            }
-        }
-        throw new RuntimeException("Embedding 실패: " + lastException.getMessage(), lastException);
-    }
-
-    private float[] doEmbed(String input) {
-        Value instance = Value.newBuilder()
-                .setStructValue(Struct.newBuilder()
-                        .putFields("content", Value.newBuilder().setStringValue(input).build())
-                        .build())
-                .build();
-
-        PredictResponse response = client.predict(endpointName, List.of(instance), Value.newBuilder().build());
-
-        ListValue values = response.getPredictions(0)
-                .getStructValue()
-                .getFieldsOrThrow("embeddings")
-                .getStructValue()
-                .getFieldsOrThrow("values")
-                .getListValue();
-
-        float[] vector = new float[values.getValuesCount()];
-        for (int i = 0; i < values.getValuesCount(); i++) {
-            vector[i] = (float) values.getValues(i).getNumberValue();
-        }
-        return vector;
-    }
-
-    private void reconnect() {
-        log.info("gRPC 재연결 시도...");
         try {
-            if (client != null) client.close();
-            if (vertexAI != null) vertexAI.close();
-        } catch (Exception ignored) {}
-        vertexAI = new VertexAI(props.getProject(), props.getLocation());
-        client = vertexAI.getPredictionServiceClient();
+            Encoding enc = tokenizer.encode(input);
+            long seq = enc.getIds().length;
+
+            try (NDManager sub = manager.newSubManager()) {
+                NDArray inputIds = sub.create(enc.getIds(), new Shape(1, seq));
+                NDArray attMask  = sub.create(enc.getAttentionMask(), new Shape(1, seq));
+                inputIds.setName("input_ids");
+                attMask.setName("attention_mask");
+
+                NDList output;
+                try (Predictor<NDList, NDList> predictor = model.newPredictor()) {
+                    output = predictor.predict(new NDList(inputIds, attMask));
+                }
+
+                // last_hidden_state [1, seq, 1024] → mean pool over non-padding tokens
+                NDArray hidden = output.get(0);
+                NDArray maskF  = attMask.toType(DataType.FLOAT32, false).reshape(1, seq, 1);
+                NDArray summed = hidden.mul(maskF).sum(new int[]{1});
+                NDArray count  = maskF.sum(new int[]{1}).clip(1e-9f, Float.MAX_VALUE);
+                return summed.div(count).toFloatArray();
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("BGE-M3 임베딩 실패: " + e.getMessage(), e);
+        }
     }
 
     public static String toVectorString(float[] v) {
