@@ -18,7 +18,7 @@ public class EmbeddingPipelineService {
 
     public void embedAndStore(List<ChunkDocument> chunks) {
         if (!embeddingService.isConfigured()) {
-            log.warn("BGE-M3 미초기화 → 임베딩 스킵 ({} 청크)", chunks.size());
+            log.warn("Vertex AI 미초기화 → 임베딩 스킵 ({} 청크)", chunks.size());
             return;
         }
 

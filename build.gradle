@@ -27,16 +27,12 @@ compileOnly 'org.projectlombok:lombok'
 	annotationProcessor 'org.projectlombok:lombok'
 
 	runtimeOnly 'org.postgresql:postgresql'
+	implementation 'com.google.auth:google-auth-library-oauth2-http:1.23.0'
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 	implementation 'org.springframework.boot:spring-boot-starter-oauth2-client'
 	implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:3.0.3'
 
-	// DJL — BGE-M3 ONNX in-process inference
-	implementation platform('ai.djl:bom:0.31.0')
-	implementation 'ai.djl:api'
-	implementation 'ai.djl.huggingface:tokenizers'
-	runtimeOnly 'ai.djl.onnxruntime:onnxruntime-engine'
 }
 
 

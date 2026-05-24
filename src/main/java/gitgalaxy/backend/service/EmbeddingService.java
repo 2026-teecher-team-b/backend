@@ -1,98 +1,83 @@
 package gitgalaxy.backend.service;
 
-import ai.djl.huggingface.tokenizers.Encoding;
-import ai.djl.huggingface.tokenizers.HuggingFaceTokenizer;
-import ai.djl.inference.Predictor;
-import ai.djl.ndarray.NDArray;
-import ai.djl.ndarray.NDList;
-import ai.djl.ndarray.NDManager;
-import ai.djl.ndarray.types.DataType;
-import ai.djl.ndarray.types.Shape;
-import ai.djl.repository.zoo.Criteria;
-import ai.djl.repository.zoo.ZooModel;
-import ai.djl.translate.NoopTranslator;
-import jakarta.annotation.PostConstruct;
-import jakarta.annotation.PreDestroy;
+import com.google.auth.oauth2.GoogleCredentials;
+import com.google.auth.oauth2.ServiceAccountCredentials;
+import gitgalaxy.backend.config.VertexAiProperties;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
 
+import java.io.FileInputStream;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 
 @Service
 @Slf4j
 public class EmbeddingService {
 
-    static final int DIMS = 1024;
+    static final int DIMS = 768;
 
-    private static final String MODEL_NAME = "BAAI/bge-m3";
-    // quantized (~400MB): 첫 실행 시 ~/.djl.ai 캐시에 자동 다운로드
-    private static final String ONNX_URL =
-            "https://huggingface.co/BAAI/bge-m3/resolve/main/onnx/model_quantized.onnx";
+    private final VertexAiProperties props;
+    private final RestTemplate restTemplate;
+    private GoogleCredentials credentials;
 
-    private HuggingFaceTokenizer tokenizer;
-    private ZooModel<NDList, NDList> model;
-    private NDManager manager;
-
-    @PostConstruct
-    public void init() throws Exception {
-        log.info("BGE-M3 로딩 중 (첫 실행 시 모델 다운로드 ~400MB)...");
-
-        tokenizer = HuggingFaceTokenizer.newInstance(MODEL_NAME,
-                Map.of("maxLength", "512", "padding", "true", "truncation", "true"));
-
-        Criteria<NDList, NDList> criteria = Criteria.builder()
-                .setTypes(NDList.class, NDList.class)
-                .optEngine("OnnxRuntime")
-                .optModelUrls(ONNX_URL)
-                .optTranslator(new NoopTranslator())
-                .build();
-
-        model = criteria.loadModel();
-        manager = NDManager.newBaseManager();
-        log.info("BGE-M3 로딩 완료 (dim={})", DIMS);
-    }
-
-    @PreDestroy
-    public void destroy() {
+    public EmbeddingService(VertexAiProperties props, RestTemplate restTemplate) {
+        this.props = props;
+        this.restTemplate = restTemplate;
         try {
-            if (manager != null) manager.close();
-            if (model != null) model.close();
-            if (tokenizer != null) tokenizer.close();
+            String keyPath = System.getenv("GOOGLE_APPLICATION_CREDENTIALS");
+            if (keyPath != null) {
+                credentials = ServiceAccountCredentials
+                        .fromStream(new FileInputStream(keyPath))
+                        .createScoped(Collections.singletonList("https://www.googleapis.com/auth/cloud-platform"));
+                log.info("Vertex AI 인증 초기화 완료");
+            } else {
+                log.warn("GOOGLE_APPLICATION_CREDENTIALS 미설정 → 임베딩 비활성화");
+            }
         } catch (Exception e) {
-            log.warn("EmbeddingService 종료 오류: {}", e.getMessage());
+            log.warn("Vertex AI 인증 초기화 실패: {}", e.getMessage());
         }
     }
 
     public boolean isConfigured() {
-        return model != null && tokenizer != null;
+        return credentials != null;
     }
 
+    @SuppressWarnings("unchecked")
     public float[] embed(String text) {
         String input = text.length() > 8000 ? text.substring(0, 8000) : text;
         try {
-            Encoding enc = tokenizer.encode(input);
-            long seq = enc.getIds().length;
+            credentials.refreshIfExpired();
+            String token = credentials.getAccessToken().getTokenValue();
 
-            try (NDManager sub = manager.newSubManager()) {
-                NDArray inputIds = sub.create(enc.getIds(), new Shape(1, seq));
-                NDArray attMask  = sub.create(enc.getAttentionMask(), new Shape(1, seq));
-                inputIds.setName("input_ids");
-                attMask.setName("attention_mask");
+            String url = String.format(
+                    "https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predict",
+                    props.getLocation(), props.getProject(), props.getLocation(), props.getEmbeddingModel()
+            );
 
-                NDList output;
-                try (Predictor<NDList, NDList> predictor = model.newPredictor()) {
-                    output = predictor.predict(new NDList(inputIds, attMask));
-                }
+            HttpHeaders headers = new HttpHeaders();
+            headers.setBearerAuth(token);
+            headers.set("Content-Type", "application/json");
 
-                // last_hidden_state [1, seq, 1024] → mean pool over non-padding tokens
-                NDArray hidden = output.get(0);
-                NDArray maskF  = attMask.toType(DataType.FLOAT32, false).reshape(1, seq, 1);
-                NDArray summed = hidden.mul(maskF).sum(new int[]{1});
-                NDArray count  = maskF.sum(new int[]{1}).clip(1e-9f, Float.MAX_VALUE);
-                return summed.div(count).toFloatArray();
+            Map<String, Object> body = Map.of("instances", List.of(Map.of("content", input)));
+            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
+
+            Map<String, Object> response = restTemplate.exchange(url, HttpMethod.POST, entity, Map.class).getBody();
+            List<Map<String, Object>> predictions = (List<Map<String, Object>>) response.get("predictions");
+            Map<String, Object> embeddings = (Map<String, Object>) predictions.get(0).get("embeddings");
+            List<Number> vec = (List<Number>) embeddings.get("values");
+
+            float[] result = new float[vec.size()];
+            for (int i = 0; i < vec.size(); i++) {
+                result[i] = vec.get(i).floatValue();
             }
+            return result;
         } catch (Exception e) {
-            throw new RuntimeException("BGE-M3 임베딩 실패: " + e.getMessage(), e);
+            throw new RuntimeException("Vertex AI 임베딩 실패: " + e.getMessage(), e);
         }
     }
 
@@ -102,6 +87,6 @@ public class EmbeddingService {
             if (i > 0) sb.append(',');
             sb.append(v[i]);
         }
-        return sb.append(']').toString();
+        return sb.append(']').append("::vector").toString();
     }
 }

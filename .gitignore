@@ -45,3 +45,4 @@ out/
 .omc/
 .claude/
 gcp-credentials.json
+gcp-key.json
