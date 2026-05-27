@@ -1,0 +1,12 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y curl build-essential zlib1g-dev && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir fastapi uvicorn FlagEmbedding
+
+COPY embed_server.py .
+
+EXPOSE 8100
+CMD ["python", "embed_server.py"]
