@@ -3,35 +3,41 @@ package gitgalaxy.backend.service;
 import gitgalaxy.backend.repository.ChunkEmbeddingRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 
-/**
- * RAG 파이프라인: 질문 → 벡터 검색 → context 구성 → LLM 설명 생성.
- *
- * 흐름:
- *   1. 질문을 embedding → 쿼리 벡터
- *   2. chunk_embeddings에서 cosine 유사도 top-5 검색
- *   3. 검색 결과로 context 구성
- *   4. LLM에 prompt 전달 → 설명 반환
- */
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class RagService {
 
     private static final int TOP_K = 5;
+    private static final Duration CACHE_TTL = Duration.ofHours(1);
 
     private final EmbeddingService embeddingService;
     private final ChunkEmbeddingRepository chunkEmbeddingRepository;
     private final LlmService llmService;
+    private final StringRedisTemplate redisTemplate;
 
-    /** 특정 repo에 대한 질문 답변 */
+    /** 특정 repo에 대한 질문 답변 (Cache-Aside) */
     public String explain(String owner, String repo, String question) {
-        String queryVector = toQueryVector(question);
+        String cacheKey = "rag:" + owner + ":" + repo + ":" + hashQuestion(question);
 
+        String cached = redisTemplate.opsForValue().get(cacheKey);
+        if (cached != null) {
+            log.debug("RAG cache hit: {}", cacheKey);
+            return cached;
+        }
+
+        String queryVector = toQueryVector(question);
         List<Map<String, Object>> chunks = chunkEmbeddingRepository.findSimilar(queryVector, owner, repo, TOP_K);
 
         if (chunks.isEmpty()) {
@@ -40,13 +46,23 @@ public class RagService {
         }
 
         log.debug("RAG: {}/{} 질문='{}' → {}개 청크 검색됨", owner, repo, question, chunks.size());
-        return llmService.chat(buildPrompt(owner + "/" + repo, question, buildContext(chunks)));
+        String answer = llmService.chat(buildPrompt(owner + "/" + repo, question, buildContext(chunks)));
+
+        redisTemplate.opsForValue().set(cacheKey, answer, CACHE_TTL);
+        return answer;
     }
 
-    /** 전체 repo 대상 글로벌 검색 */
+    /** 전체 repo 대상 글로벌 검색 (Cache-Aside) */
     public String explainGlobal(String question) {
-        String queryVector = toQueryVector(question);
+        String cacheKey = "rag:global:" + hashQuestion(question);
 
+        String cached = redisTemplate.opsForValue().get(cacheKey);
+        if (cached != null) {
+            log.debug("RAG global cache hit: {}", cacheKey);
+            return cached;
+        }
+
+        String queryVector = toQueryVector(question);
         List<Map<String, Object>> chunks = chunkEmbeddingRepository.findSimilarGlobal(queryVector, TOP_K);
 
         if (chunks.isEmpty()) {
@@ -54,7 +70,20 @@ public class RagService {
         }
 
         log.debug("RAG global: 질문='{}' → {}개 청크 검색됨", question, chunks.size());
-        return llmService.chat(buildPrompt("GitHub repos", question, buildContext(chunks)));
+        String answer = llmService.chat(buildPrompt("GitHub repos", question, buildContext(chunks)));
+
+        redisTemplate.opsForValue().set(cacheKey, answer, CACHE_TTL);
+        return answer;
+    }
+
+    /** 레포 데이터 업데이트 시 해당 레포 캐시 무효화 */
+    public void evictRepoCache(String owner, String repo) {
+        String pattern = "rag:" + owner + ":" + repo + ":*";
+        var keys = redisTemplate.keys(pattern);
+        if (keys != null && !keys.isEmpty()) {
+            redisTemplate.delete(keys);
+            log.info("RAG cache evicted: {} keys for {}/{}", keys.size(), owner, repo);
+        }
     }
 
     // ────────────────────────────────────────────────
@@ -92,5 +121,15 @@ public class RagService {
                 - 문서에 없는 내용은 "문서에 명시되지 않았습니다"라고 하세요.
                 - 한국어로 답변하세요.
                 """.formatted(target, context, question);
+    }
+
+    private String hashQuestion(String question) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(question.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash).substring(0, 16);
+        } catch (NoSuchAlgorithmException e) {
+            return String.valueOf(question.hashCode());
+        }
     }
 }
