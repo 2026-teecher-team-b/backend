@@ -25,8 +25,10 @@ public class EmbeddingService {
     private static final long RETRY_DELAY_MS = 1000;
 
     private final VertexAiProperties props;
-    private VertexAI vertexAI;
-    private PredictionServiceClient client;
+    // 배치 임베딩을 Virtual Thread로 병렬 호출하므로, 공유 gRPC 클라이언트 참조를
+    // volatile로 두고 reconnect()를 동기화해 동시 재연결 시 double-close/NPE를 방지한다.
+    private volatile VertexAI vertexAI;
+    private volatile PredictionServiceClient client;
     private String endpointName;
 
     public EmbeddingService(VertexAiProperties props) {
@@ -148,7 +150,7 @@ public class EmbeddingService {
         return vector;
     }
 
-    private void reconnect() {
+    private synchronized void reconnect() {
         log.info("gRPC 재연결 시도...");
         try {
             if (client != null) client.close();
